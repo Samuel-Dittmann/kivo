@@ -1,11 +1,14 @@
+import cv2
 import tensorflow as tf
 from tf2_yolov4.anchors import YOLOV4_ANCHORS
 from tf2_yolov4.model import YOLOv4
 import pafy
 import cv2 as cv
 import numpy as np
+import threading
+import concurrent.futures
 
-WIDTH, HEIGHT = (1280, 736)
+WIDTH, HEIGHT = (1920, 1088)
 
 # Klasse für Code von Jonas
 
@@ -25,20 +28,50 @@ def convertPixel(x, y):
     dart_loc_temp = np.array([dart_loc_temp])
     dart_loc = cv.perspectiveTransform(dart_loc_temp, H)
     new_dart_loc = tuple(dart_loc.reshape(1, -1)[0])
-    print(new_dart_loc)
+    #print(new_dart_loc)
     cv.circle(map, (round(new_dart_loc[0]), round(
         new_dart_loc[1])), 5, (0, 255, 0), -1)
 
+def curr_frame(frame):
+    img_in = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+    img_in = tf.expand_dims(img_in, 0)
+    img_in = transform_images(img_in, WIDTH, HEIGHT)
 
-#url = "https://www.youtube.com/watch?v=3g_xTJWPJ74"
-#video = pafy.new(url)
-#best = video.getbest(preftype="mp4")
-#cap = cv.VideoCapture(best.url)
-cap = cv.VideoCapture("recording01.mp4")
-counter = 1
+    boxes, scores, classes, detections = model.predict(img_in)
 
-start_frame_number = 1
-cap.set(cv.CAP_PROP_POS_FRAMES, start_frame_number)
+    boxes = boxes[0] * [WIDTH, HEIGHT, WIDTH, HEIGHT]
+    scores = scores[0]
+    classes = classes[0].astype(int)
+    detections = detections[0]
+
+    return boxes, scores, classes, detections
+
+def show(frame, boxes, scores, classes, detections):
+    print("Showing image")
+    for (xmin, ymin, xmax, ymax), score, class_idx in zip(boxes, scores, classes):
+        convertPixel(round(xmin + xmax / 2), round(ymin + ymax / 2))
+        if score > 0:
+            if CLASSES[class_idx] in ['car', 'motorcycle', 'bus', 'truck']:
+                # create bounding box (frame of the video)
+                cv.rectangle(frame, (int(xmin), int(ymin)),
+                             (int(xmax), int(ymax)), (0, 0, 0), 2)
+                # create rectangle over the bounding box for the track id
+                cv.rectangle(frame, (int(xmin), int(
+                    ymin) - 30), (int(xmin) + (len(CLASSES[class_idx])) * 1, int(ymin)), (255, 0, 0),
+                             -1)
+                # put text in secound rectangle
+                cv.putText(frame, CLASSES[class_idx],
+                           (int(xmin), int(ymin - 10)), 0, 0.75, (255, 255, 255), 2)
+
+
+url = "https://www.youtube.com/watch?v=3g_xTJWPJ74"
+video = pafy.new(url)
+best = video.getbest(preftype="mp4")
+cap = cv.VideoCapture(best.url)
+cap.set(cv.CAP_PROP_BUFFERSIZE, 3)
+#cap = cv.VideoCapture("recording01.mp4")
+
+
 
 map = cv.imread('map.PNG', -1)
 
@@ -68,6 +101,8 @@ CLASSES = [
     'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
 ]
 
+
+
 while True:
     # if frame is read correctly ret is True
     ret, frame = cap.read()
@@ -75,41 +110,22 @@ while True:
         print("Can't receive frame (stream end?). Exiting ...")
         break
 
-    # if counter % 5 == 0:
-    img_in = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-    img_in = tf.expand_dims(img_in, 0)
-    img_in = transform_images(img_in, WIDTH, HEIGHT)
+    #x = threading.Thread(target=curr_frame, args=(frame, ret))
+    #x.start
 
-    boxes, scores, classes, detections = model.predict(img_in)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(curr_frame, frame)
+        boxes, scores, classes, detections = future.result()
 
-    boxes = boxes[0] * [WIDTH, HEIGHT, WIDTH, HEIGHT]
-    scores = scores[0]
-    classes = classes[0].astype(int)
-    detections = detections[0]
-
-    for (xmin, ymin, xmax, ymax), score, class_idx in zip(boxes, scores, classes):
-        convertPixel(round(xmin + xmax / 2), round(ymin + ymax / 2))
-        if score > 0:
-            if CLASSES[class_idx] in ['car', 'motorcycle', 'bus', 'truck']:
-                # create bounding box (frame of the video)
-                cv.rectangle(frame, (int(xmin), int(ymin)),
-                             (int(xmax), int(ymax)), (0, 0, 0), 2)
-                # create rectangle over the bounding box for the track id
-                cv.rectangle(frame, (int(xmin), int(
-                    ymin) - 30), (int(xmin) + (len(CLASSES[class_idx])) * 1, int(ymin)), (255, 0, 0),
-                    -1)
-                # put text in secound rectangle
-                cv.putText(frame, CLASSES[class_idx],
-                           (int(xmin), int(ymin - 10)), 0, 0.75, (255, 255, 255), 2)
+    t = threading.Thread(target=show, args=(frame, boxes, scores, classes, detections))
+    t.start()
 
     cv.imshow('KIVO', frame)
     cv.imshow('Map', map)
 
     if cv.waitKey(1) == ord('q'):
         break
-    # When everything done, release the capture
-
-    counter += 1
+# When everything done, release the capture
 
 cap.release()
 cv.destroyAllWindows()
